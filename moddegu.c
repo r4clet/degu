@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <zephyr.h>
+#include <drivers/gpio.h>
 #include "py/nlr.h"
 #include "py/obj.h"
 #include "py/runtime.h"
@@ -18,6 +19,8 @@
 #include "degu_utils.h"
 #include "degu_ota.h"
 #include "degu_pm.h"
+
+#define GPIO_CFG_SENSE_LOW (GPIO_PIN_CNF_SENSE_Low << GPIO_PIN_CNF_SENSE_Pos)
 
 STATIC mp_obj_t degu_check_update(void) {
 	return mp_obj_new_int(check_update());
@@ -57,9 +60,10 @@ STATIC mp_obj_t degu_get_shadow(void) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(degu_get_shadow_obj, degu_get_shadow);
 
-STATIC mp_obj_t mod_suspend(mp_obj_t time_sec)
+STATIC mp_obj_t mod_suspend(size_t n_args, mp_obj_t *args)
 {
-	s32_t time_to_wake = mp_obj_get_int(time_sec);
+	s32_t time_to_wake = mp_obj_get_int(args[0]);
+	bool external_awake = n_args >= 2 && mp_obj_is_true(args[1]);
 
 	struct net_if *iface;
 	struct openthread_context *ot_context;
@@ -72,8 +76,13 @@ STATIC mp_obj_t mod_suspend(mp_obj_t time_sec)
 	config = otThreadGetLinkMode(ot_context->instance);
 
 #ifdef CONFIG_SYS_POWER_MANAGEMENT
-	sys_pm_ctrl_enable_state(SYS_POWER_STATE_SLEEP_3);
-	sys_set_power_state(SYS_POWER_STATE_SLEEP_3);
+	if (external_awake) {
+		sys_pm_ctrl_enable_state(SYS_POWER_STATE_SLEEP_1);
+		sys_set_power_state(SYS_POWER_STATE_SLEEP_1);
+	} else {
+		sys_pm_ctrl_enable_state(SYS_POWER_STATE_SLEEP_3);
+		sys_set_power_state(SYS_POWER_STATE_SLEEP_3);
+	}
 #endif
 
 	openthread_suspend(ot_context->instance);
@@ -81,16 +90,67 @@ STATIC mp_obj_t mod_suspend(mp_obj_t time_sec)
 	openthread_resume(ot_context->instance, channel, config);
 
 #ifdef CONFIG_SYS_POWER_MANAGEMENT
-	sys_pm_ctrl_disable_state(SYS_POWER_STATE_SLEEP_3);
+	if (external_awake) {
+		sys_pm_ctrl_disable_state(SYS_POWER_STATE_SLEEP_1);
+	} else {
+		sys_pm_ctrl_disable_state(SYS_POWER_STATE_SLEEP_3);
+	}
 #endif
 
 	return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_1(mod_suspend_obj, mod_suspend);
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_suspend_obj, 1, 2, mod_suspend);
 
-STATIC mp_obj_t mod_powerdown(void)
+STATIC bool listen_to_gpio(mp_obj_t gpio) {
+	mp_obj_t *items;
+	mp_obj_get_array_fixed_n(gpio, 2, &items);
+
+	const char *drv_name = mp_obj_str_get_str(items[0]);
+	int pin = mp_obj_get_int(items[1]);
+	struct device *port = device_get_binding(drv_name);
+    if (!port) {
+        return false;
+    }
+
+	gpio_pin_configure(port, pin, GPIO_DIR_IN 
+		| GPIO_PUD_PULL_UP
+		| GPIO_INT | GPIO_INT_LEVEL
+		| GPIO_CFG_SENSE_LOW);
+	gpio_pin_enable_callback(port, pin);
+
+	return true;
+}
+
+STATIC mp_obj_t mod_powerdown(size_t n_args, mp_obj_t *args)
 {
-	degu_ext_device_power(false);
+	bool external_awake = n_args >= 1 && mp_obj_is_true(args[0]);
+
+	if (n_args >= 2) {
+		if (!external_awake) {
+			mp_raise_ValueError("unable to listen to external gpio when external device power is down");
+		}
+
+		if (mp_obj_is_type(args[1], &mp_type_tuple)) {
+			listen_to_gpio(args[1]);
+		} else if (mp_obj_is_type(args[1], &mp_type_list)) {
+			size_t listener_arr_size;
+			mp_obj_t* listener_arr;
+			mp_obj_get_array(args[1], &listener_arr_size, &listener_arr);
+
+			for (size_t i = 0; i < listener_arr_size; i++) {
+				if (!mp_obj_is_type(listener_arr[i], &mp_type_tuple)) {
+					mp_raise_ValueError("one or more of the listeners are not tuples");
+				}
+				if (!listen_to_gpio(listener_arr[i])) {
+					mp_raise_ValueError("the specified port is invalid");
+				}
+			}
+		} else {
+			mp_raise_ValueError("the listener must be a tuple, (\"GPIO_x\", pin), or their list");
+		}
+	}
+
+	degu_ext_device_power(external_awake);
 #ifdef CONFIG_DEVICE_POWER_MANAGEMENT
 	sys_pm_suspend_devices();
 #endif
@@ -106,7 +166,7 @@ STATIC mp_obj_t mod_powerdown(void)
 #endif
 	return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_0(mod_powerdown_obj, mod_powerdown);
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_powerdown_obj, 0, 2, mod_powerdown);
 
 STATIC const mp_rom_map_elem_t degu_globals_table[] = {
 	{MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_degu) },

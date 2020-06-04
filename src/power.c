@@ -31,6 +31,9 @@ void sys_pm_notify_power_state_entry(enum power_states state)
 {
 #ifdef CONFIG_SYS_POWER_MANAGEMENT
 	switch (state) {
+	case SYS_POWER_STATE_SLEEP_1:
+		k_cpu_idle();
+		break;
 	case SYS_POWER_STATE_SLEEP_2:
 		device_power(false);
 		k_cpu_idle();
@@ -55,6 +58,8 @@ void sys_pm_notify_power_state_exit(enum power_states state)
 {
 #ifdef CONFIG_SYS_POWER_MANAGEMENT
 	switch (state) {
+	case SYS_POWER_STATE_SLEEP_1:
+		break;
 	case SYS_POWER_STATE_SLEEP_2:
 		device_power(true);
 		break;
