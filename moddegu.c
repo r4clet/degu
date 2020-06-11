@@ -131,7 +131,9 @@ STATIC mp_obj_t mod_powerdown(size_t n_args, mp_obj_t *args)
 		}
 
 		if (mp_obj_is_type(args[1], &mp_type_tuple)) {
-			listen_to_gpio(args[1]);
+			if (!listen_to_gpio(args[1])) {
+				mp_raise_ValueError("the specified port is invalid");
+			}
 		} else if (mp_obj_is_type(args[1], &mp_type_list)) {
 			size_t listener_arr_size;
 			mp_obj_t* listener_arr;
