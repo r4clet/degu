@@ -20,8 +20,6 @@
 #include "degu_ota.h"
 #include "degu_pm.h"
 
-#define GPIO_CFG_SENSE_LOW (GPIO_PIN_CNF_SENSE_Low << GPIO_PIN_CNF_SENSE_Pos)
-
 STATIC mp_obj_t degu_check_update(void) {
 	return mp_obj_new_int(check_update());
 }
@@ -101,7 +99,10 @@ STATIC mp_obj_t mod_suspend(size_t n_args, mp_obj_t *args)
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_suspend_obj, 1, 2, mod_suspend);
 
-STATIC bool listen_to_gpio(mp_obj_t gpio) {
+#define GPIO_CFG_SENSE_LOW (GPIO_PIN_CNF_SENSE_Low << GPIO_PIN_CNF_SENSE_Pos)
+#define GPIO_CFG_SENSE_HIGH (GPIO_PIN_CNF_SENSE_High << GPIO_PIN_CNF_SENSE_Pos)
+
+STATIC bool listen_to_gpio(mp_obj_t gpio, bool pull_up, bool sense_low) {
 	mp_obj_t *items;
 	mp_obj_get_array_fixed_n(gpio, 2, &items);
 
@@ -113,9 +114,9 @@ STATIC bool listen_to_gpio(mp_obj_t gpio) {
     }
 
 	gpio_pin_configure(port, pin, GPIO_DIR_IN 
-		| GPIO_PUD_PULL_UP
+		| (pull_up ? GPIO_PUD_PULL_UP : GPIO_PUD_PULL_DOWN)
 		| GPIO_INT | GPIO_INT_LEVEL
-		| GPIO_CFG_SENSE_LOW);
+		| (sense_low ? GPIO_CFG_SENSE_LOW : GPIO_CFG_SENSE_HIGH));
 	gpio_pin_enable_callback(port, pin);
 
 	return true;
@@ -124,6 +125,8 @@ STATIC bool listen_to_gpio(mp_obj_t gpio) {
 STATIC mp_obj_t mod_powerdown(size_t n_args, mp_obj_t *args)
 {
 	bool external_awake = n_args >= 1 && mp_obj_is_true(args[0]);
+	bool pull_up = n_args >= 3 && mp_obj_is_true(args[2]);
+	bool sense_low = n_args >= 4 && mp_obj_is_true(args[3]);
 
 	if (n_args >= 2) {
 		if (!external_awake) {
@@ -131,7 +134,7 @@ STATIC mp_obj_t mod_powerdown(size_t n_args, mp_obj_t *args)
 		}
 
 		if (mp_obj_is_type(args[1], &mp_type_tuple)) {
-			if (!listen_to_gpio(args[1])) {
+			if (!listen_to_gpio(args[1], pull_up, sense_low)) {
 				mp_raise_ValueError("the specified port is invalid");
 			}
 		} else if (mp_obj_is_type(args[1], &mp_type_list)) {
@@ -143,7 +146,7 @@ STATIC mp_obj_t mod_powerdown(size_t n_args, mp_obj_t *args)
 				if (!mp_obj_is_type(listener_arr[i], &mp_type_tuple)) {
 					mp_raise_ValueError("one or more of the listeners are not tuples");
 				}
-				if (!listen_to_gpio(listener_arr[i])) {
+				if (!listen_to_gpio(listener_arr[i], pull_up, sense_low)) {
 					mp_raise_ValueError("the specified port is invalid");
 				}
 			}
@@ -168,7 +171,7 @@ STATIC mp_obj_t mod_powerdown(size_t n_args, mp_obj_t *args)
 #endif
 	return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_powerdown_obj, 0, 2, mod_powerdown);
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_powerdown_obj, 0, 4, mod_powerdown);
 
 STATIC const mp_rom_map_elem_t degu_globals_table[] = {
 	{MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_degu) },
